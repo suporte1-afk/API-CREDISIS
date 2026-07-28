@@ -40,7 +40,6 @@ async function getBoardColumns(boardId) {
   `;
 
   const data = await monday(query, { boardId });
-
   return data.boards[0].columns;
 }
 
@@ -51,7 +50,6 @@ function findColumn(columns, title) {
 }
 
 async function getPendingItems(statusColumnId) {
-
   const query = `
     query ($boardId: ID!) {
       boards(ids: [$boardId]) {
@@ -86,7 +84,6 @@ async function getPendingItems(statusColumnId) {
 }
 
 async function updateStatus(itemId, statusColumnId, label) {
-
   const mutation = `
     mutation (
       $boardId: ID!,
@@ -107,7 +104,7 @@ async function updateStatus(itemId, statusColumnId, label) {
 
   await monday(mutation, {
     boardId: ORIGEM_BOARD,
-    itemId: itemId,
+    itemId,
     columnId: statusColumnId,
     value: JSON.stringify({
       label
@@ -116,7 +113,6 @@ async function updateStatus(itemId, statusColumnId, label) {
 }
 
 async function findItemByName(boardId, itemName) {
-
   const query = `
     query ($boardId: ID!) {
       boards(ids: [$boardId]) {
@@ -143,14 +139,21 @@ async function updateCustomerData(
   itemId,
   cpfColumnId,
   nomeColumnId,
+  retiradaColumnId,
   cpf,
-  nome
+  nome,
+  retirada
 ) {
-
   const values = {};
 
   values[cpfColumnId] = cpf;
   values[nomeColumnId] = nome;
+
+  if (retirada) {
+    values[retiradaColumnId] = {
+      date: retirada
+    };
+  }
 
   const mutation = `
     mutation (
@@ -176,8 +179,7 @@ async function updateCustomerData(
 }
 
 async function main() {
-
-  console.log("Iniciando...");
+  console.log("Iniciando sincronização...");
 
   const origemColumns = await getBoardColumns(
     ORIGEM_BOARD
@@ -202,6 +204,11 @@ async function main() {
     "Nome do Cliente"
   );
 
+  const retiradaOrigemCol = findColumn(
+    origemColumns,
+    "Retirada do Cliente"
+  );
+
   const statusCol = findColumn(
     origemColumns,
     "Status"
@@ -217,13 +224,20 @@ async function main() {
     "Nome do Cliente"
   );
 
+  const retiradaControleCol = findColumn(
+    controleColumns,
+    "Retirada do Cliente"
+  );
+
   if (
     !numeroSerieCol ||
     !cpfOrigemCol ||
     !nomeOrigemCol ||
+    !retiradaOrigemCol ||
     !statusCol ||
     !cpfControleCol ||
-    !nomeControleCol
+    !nomeControleCol ||
+    !retiradaControleCol
   ) {
     throw new Error(
       "Uma ou mais colunas não foram encontradas."
@@ -239,9 +253,7 @@ async function main() {
   );
 
   for (const item of pendentes) {
-
     try {
-
       await updateStatus(
         item.id,
         statusCol.id,
@@ -260,17 +272,20 @@ async function main() {
         c => c.id === nomeOrigemCol.id
       )?.text || "";
 
+      const retirada = item.column_values.find(
+        c => c.id === retiradaOrigemCol.id
+      )?.text || "";
+
       const series = numeroSerie
         .split(/\s+/)
         .map(x => x.trim())
         .filter(Boolean);
 
       console.log(
-        `Processando ${series.length} séries`
+        `Processando ${series.length} números de série`
       );
 
       for (const serie of series) {
-
         const destino = await findItemByName(
           CONTROLE_BOARD,
           serie
@@ -278,7 +293,7 @@ async function main() {
 
         if (!destino) {
           console.log(
-            `Não encontrado: ${serie}`
+            `Número de série não encontrado: ${serie}`
           );
           continue;
         }
@@ -287,12 +302,14 @@ async function main() {
           destino.id,
           cpfControleCol.id,
           nomeControleCol.id,
+          retiradaControleCol.id,
           cpf,
-          nome
+          nome,
+          retirada
         );
 
         console.log(
-          `Atualizado: ${serie}`
+          `Atualizado com sucesso: ${serie}`
         );
       }
 
@@ -302,11 +319,15 @@ async function main() {
         "Concluído"
       );
 
+      console.log(
+        `Item ${item.id} concluído`
+      );
+
     } catch (err) {
 
       console.error(
-        `Erro item ${item.id}:`,
-        err.message
+        `Erro ao processar item ${item.id}`,
+        err
       );
 
       try {
@@ -315,11 +336,16 @@ async function main() {
           statusCol.id,
           "Erro"
         );
-      } catch {}
+      } catch (updateError) {
+        console.error(
+          "Erro ao atualizar status para Erro",
+          updateError
+        );
+      }
     }
   }
 
-  console.log("Finalizado");
+  console.log("Sincronização finalizada.");
 }
 
 main().catch(err => {
