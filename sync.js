@@ -28,7 +28,7 @@ async function monday(query, variables = {}) {
 
 async function getBoardColumns(boardId) {
   const query = `
-    query ($boardId: ID!) {
+    query($boardId: ID!) {
       boards(ids: [$boardId]) {
         columns {
           id
@@ -51,7 +51,7 @@ function findColumn(columns, title) {
 
 async function getPendingItems(statusColumnId) {
   const query = `
-    query ($boardId: ID!) {
+    query($boardId: ID!) {
       boards(ids: [$boardId]) {
         items_page(limit: 500) {
           items {
@@ -85,7 +85,7 @@ async function getPendingItems(statusColumnId) {
 
 async function updateStatus(itemId, statusColumnId, label) {
   const mutation = `
-    mutation (
+    mutation(
       $boardId: ID!,
       $itemId: ID!,
       $columnId: String!,
@@ -112,9 +112,40 @@ async function updateStatus(itemId, statusColumnId, label) {
   });
 }
 
+async function updateErrorMessage(
+  itemId,
+  columnId,
+  text
+) {
+  const mutation = `
+    mutation(
+      $boardId: ID!,
+      $itemId: ID!,
+      $columnId: String!,
+      $value: String!
+    ) {
+      change_simple_column_value(
+        board_id: $boardId,
+        item_id: $itemId,
+        column_id: $columnId,
+        value: $value
+      ) {
+        id
+      }
+    }
+  `;
+
+  await monday(mutation, {
+    boardId: ORIGEM_BOARD,
+    itemId,
+    columnId,
+    value: text
+  });
+}
+
 async function findItemByName(boardId, itemName) {
   const query = `
-    query ($boardId: ID!) {
+    query($boardId: ID!) {
       boards(ids: [$boardId]) {
         items_page(limit: 500) {
           items {
@@ -131,7 +162,9 @@ async function findItemByName(boardId, itemName) {
   });
 
   return data.boards[0].items_page.items.find(
-    i => i.name.trim() === itemName.trim()
+    item =>
+      item.name.trim().toUpperCase() ===
+      itemName.trim().toUpperCase()
   );
 }
 
@@ -156,7 +189,7 @@ async function updateCustomerData(
   }
 
   const mutation = `
-    mutation (
+    mutation(
       $boardId: ID!,
       $itemId: ID!,
       $values: JSON!
@@ -179,15 +212,14 @@ async function updateCustomerData(
 }
 
 async function main() {
+
   console.log("Iniciando sincronização...");
 
-  const origemColumns = await getBoardColumns(
-    ORIGEM_BOARD
-  );
+  const origemColumns =
+    await getBoardColumns(ORIGEM_BOARD);
 
-  const controleColumns = await getBoardColumns(
-    CONTROLE_BOARD
-  );
+  const controleColumns =
+    await getBoardColumns(CONTROLE_BOARD);
 
   const numeroSerieCol = findColumn(
     origemColumns,
@@ -214,6 +246,11 @@ async function main() {
     "Status"
   );
 
+  const mensagemErroCol = findColumn(
+    origemColumns,
+    "Mensagem de Erro"
+  );
+
   const cpfControleCol = findColumn(
     controleColumns,
     "CPF/CNPJ do Cliente"
@@ -235,6 +272,7 @@ async function main() {
     !nomeOrigemCol ||
     !retiradaOrigemCol ||
     !statusCol ||
+    !mensagemErroCol ||
     !cpfControleCol ||
     !nomeControleCol ||
     !retiradaControleCol
@@ -244,20 +282,27 @@ async function main() {
     );
   }
 
-  const pendentes = await getPendingItems(
-    statusCol.id
-  );
+  const pendentes =
+    await getPendingItems(statusCol.id);
 
   console.log(
-    `Itens pendentes encontrados: ${pendentes.length}`
+    `Pendentes encontrados: ${pendentes.length}`
   );
 
   for (const item of pendentes) {
+
     try {
+
       await updateStatus(
         item.id,
         statusCol.id,
         "Em processamento"
+      );
+
+      await updateErrorMessage(
+        item.id,
+        mensagemErroCol.id,
+        ""
       );
 
       const numeroSerie = item.column_values.find(
@@ -278,23 +323,27 @@ async function main() {
 
       const series = numeroSerie
         .split(/\s+/)
-        .map(x => x.trim())
+        .map(v => v.trim())
         .filter(Boolean);
 
-      console.log(
-        `Processando ${series.length} números de série`
-      );
+      const naoEncontrados = [];
 
       for (const serie of series) {
-        const destino = await findItemByName(
-          CONTROLE_BOARD,
-          serie
-        );
+
+        const destino =
+          await findItemByName(
+            CONTROLE_BOARD,
+            serie
+          );
 
         if (!destino) {
+
+          naoEncontrados.push(serie);
+
           console.log(
-            `Número de série não encontrado: ${serie}`
+            `Série não encontrada: ${serie}`
           );
+
           continue;
         }
 
@@ -309,8 +358,28 @@ async function main() {
         );
 
         console.log(
-          `Atualizado com sucesso: ${serie}`
+          `Atualizado: ${serie}`
         );
+      }
+
+      if (naoEncontrados.length > 0) {
+
+        const mensagem =
+          `SN não encontrados: ${naoEncontrados.join(", ")}`;
+
+        await updateErrorMessage(
+          item.id,
+          mensagemErroCol.id,
+          mensagem
+        );
+
+        await updateStatus(
+          item.id,
+          statusCol.id,
+          "Erro"
+        );
+
+        continue;
       }
 
       await updateStatus(
@@ -319,33 +388,29 @@ async function main() {
         "Concluído"
       );
 
-      console.log(
-        `Item ${item.id} concluído`
-      );
+    } catch (erro) {
 
-    } catch (err) {
-
-      console.error(
-        `Erro ao processar item ${item.id}`,
-        err
-      );
+      console.error(erro);
 
       try {
+
+        await updateErrorMessage(
+          item.id,
+          mensagemErroCol.id,
+          erro.message
+        );
+
         await updateStatus(
           item.id,
           statusCol.id,
           "Erro"
         );
-      } catch (updateError) {
-        console.error(
-          "Erro ao atualizar status para Erro",
-          updateError
-        );
-      }
+
+      } catch {}
     }
   }
 
-  console.log("Sincronização finalizada.");
+  console.log("Fim da sincronização");
 }
 
 main().catch(err => {
